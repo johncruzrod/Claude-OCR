@@ -103,10 +103,34 @@ def main():
                 image = Image.open(file)
                 images.append(image)
     else:
+        # Initialize session state for captured images if it doesn't exist
+        if 'captured_images' not in st.session_state:
+            st.session_state.captured_images = []
+
+        # Camera input
         picture = st.camera_input("Take a picture")
         if picture:
             image = Image.open(picture)
-            images.append(image)
+            st.session_state.captured_images.append(image)
+            
+        # Display captured images with remove buttons
+        if st.session_state.captured_images:
+            st.write("Captured Images:")
+            cols = st.columns(3)
+            for idx, img in enumerate(st.session_state.captured_images):
+                with cols[idx % 3]:
+                    st.image(img, caption=f"Photo {idx + 1}", use_container_width=True)
+                    if st.button(f"Remove Photo {idx + 1}", key=f"remove_{idx}"):
+                        st.session_state.captured_images.pop(idx)
+                        st.rerun()
+            
+            # Clear all button
+            if st.button("Clear All Photos"):
+                st.session_state.captured_images = []
+                st.rerun()
+                
+        # Update images list with captured images
+        images = st.session_state.captured_images.copy()
     
     if images:
         st.subheader("Uploaded/Captured Images")
