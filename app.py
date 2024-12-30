@@ -40,7 +40,16 @@ def process_image(client, image):
     img_base64 = image_to_base64(image)
     
     # Define the British English prompt for OCR
-    prompt = """Extract and transcribe all visible text from this image maintaining the exact formatting and structure. Use labels like 'Header:', 'Footer:', etc. only when necessary for clarity. Mark unclear text with [unclear] and partially visible text with [partially visible]. Output the text directly without any introductory phrases or explanations."""
+    prompt = """Examine the entire image carefully, paying special attention to handwritten content. Consider the full context of the image to help interpret any unclear handwriting. When transcribing:
+
+- Maintain the original layout and structure of the text
+- Use context clues from the entire document to help interpret ambiguous handwriting
+- If characters or words are unclear even with context, mark them as [unclear]
+- For partially visible or cut-off text, indicate with [partial]
+- If numbers are present, verify them carefully against any surrounding context
+- Preserve any formatting or structure that adds meaning to the text
+
+Provide only the transcribed text without any explanatory notes."""
     
     try:
         response = client.messages.create(
