@@ -40,20 +40,11 @@ def process_image(client, image):
     img_base64 = image_to_base64(image)
     
     # Define the British English prompt for OCR
-    prompt = """You are an expert OCR system. Your task is to accurately transcribe text from this image:
+    prompt = """You are an expert image-to-text AI assistant. Your task is to accurately transcribe text from images.
 
-1. Output the exact text you see, preserving spelling and capitalization
-2. Preserve line breaks and spacing as they appear
-3. Ignore formatting descriptors - just give the raw text
-4. Use [unclear] only when text is truly unreadable
-5. Include any numbers or special characters exactly as shown
-6. Do not add descriptions, headers, or explanations
-7. Skip any image descriptions or visual elements
-8. Do not include any metadata or context notes
+Take the following image, and output all of the text contexts in plain text, without any additional output (introduction messages etc.)
 
-**IMPORTANT:** Use the entire image as context when transcribing the text, making sure to be word for word accurate in your extraction. Accuracy is of upmost importance, transcribe the handwriting exactly as you see it, even if some words are "wrong" in a sentence. Do not try to modify the output based on what you think may be correct, just output the exact transcribed text.
-
-Begin transcription directly:"""
+Aim for high accuracy, especially with things like handwriting, using contextual awareness from the entire image to transcribe word for word the contents."""
     
     try:
         response = client.messages.create(
