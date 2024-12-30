@@ -11,52 +11,74 @@ import numpy as np
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
-def compress_image(image, max_size_mb=4.5):
-   """Compress image while maintaining quality and keeping size under max_size_mb"""
-   img_byte_arr = io.BytesIO()
-   quality = 95
-   format = image.format if image.format else 'JPEG'
-   
-   # Convert RGBA to RGB if necessary
-   if image.mode in ('RGBA', 'LA'):
-       background = Image.new('RGB', image.size, (255, 255, 255))
-       background.paste(image, mask=image.split()[-1])
-       image = background
-   
-   # Try compressing with different quality settings
-   while quality > 5:
-       img_byte_arr = io.BytesIO()
-       image.save(img_byte_arr, format=format, quality=quality, optimize=True)
-       if len(img_byte_arr.getvalue()) / (1024 * 1024) < max_size_mb:
-           break
-       quality -= 5
-   
-   img_byte_arr.seek(0)
-   compressed_image = Image.open(img_byte_arr)
-   
-   # If still too large, resize the image
-   while len(img_byte_arr.getvalue()) / (1024 * 1024) >= max_size_mb:
-       width, height = compressed_image.size
-       new_width = int(width * 0.9)
-       new_height = int(height * 0.9)
-       compressed_image = compressed_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-       
-       img_byte_arr = io.BytesIO()
-       compressed_image.save(img_byte_arr, format=format, quality=quality, optimize=True)
-       img_byte_arr.seek(0)
-       compressed_image = Image.open(img_byte_arr)
-   
-   return compressed_image
+def compress_image(image, max_size_mb=4.8):
+    """Compress image while maintaining quality and keeping size under max_size_mb"""
+    img_byte_arr = io.BytesIO()
+    
+    # Convert RGBA to RGB if necessary
+    if image.mode in ('RGBA', 'LA'):
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        background.paste(image, mask=image.split()[-1])
+        image = background
+    
+    # First try: compression with quality reduction
+    quality = 85
+    width, height = image.size
+    
+    while True:
+        img_byte_arr = io.BytesIO()
+        # If image is large, resize first
+        if width * height > 1500000:  # If more than ~1.5 megapixels
+            scale = min(1, (1500000 / (width * height)) ** 0.5)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        else:
+            resized_image = image
+            
+        resized_image.save(img_byte_arr, format='JPEG', quality=quality, optimize=True)
+        size_mb = len(img_byte_arr.getvalue()) / (1024 * 1024)
+        
+        if size_mb < max_size_mb:
+            break
+            
+        if quality > 20:
+            quality -= 10
+        else:
+            # If still too big, reduce size
+            width = int(width * 0.8)
+            height = int(height * 0.8)
+            
+        if width < 200 or height < 200:  # Prevent images becoming too small
+            # Final attempt with minimum size and quality
+            img_byte_arr = io.BytesIO()
+            resized_image = image.resize((200, int(200 * height/width)), Image.Resampling.LANCZOS)
+            resized_image.save(img_byte_arr, format='JPEG', quality=20, optimize=True)
+            break
+    
+    img_byte_arr.seek(0)
+    return Image.open(img_byte_arr)
 
 def image_to_base64(image):
-   """Convert PIL Image to base64 string."""
-   # Compress image before converting to base64
-   compressed_image = compress_image(image)
-   
-   buffered = io.BytesIO()
-   compressed_image.save(buffered, format="JPEG", quality=95)
-   img_str = base64.b64encode(buffered.getvalue()).decode()
-   return img_str
+    """Convert PIL Image to base64 string."""
+    # Compress image before converting to base64
+    compressed_image = compress_image(image)
+    
+    # Keep trying compression until we're under limit
+    max_attempts = 3
+    attempt = 0
+    while attempt < max_attempts:
+        buffered = io.BytesIO()
+        compressed_image.save(buffered, format='JPEG', quality=85-attempt*20)
+        size_mb = len(buffered.getvalue()) / (1024 * 1024)
+        
+        if size_mb < 4.8:  # Safely under 5MB limit
+            break
+        attempt += 1
+        
+    buffered.seek(0)
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return img_str
 
 def create_docx(texts):
    """Create a Word document from the extracted texts."""
