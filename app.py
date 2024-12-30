@@ -5,6 +5,8 @@ import io
 import base64
 from docx import Document
 import tempfile
+import cv2
+import numpy as np
 
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
@@ -38,17 +40,13 @@ def process_image(client, image):
     img_base64 = image_to_base64(image)
     
     # Define the British English prompt for OCR
-    prompt = """Please analyse this image and extract all visible text content precisely as it appears. 
-    Format the output maintaining the original structure and layout where possible.
-    If there are multiple sections or paragraphs, please preserve them.
-    Include any relevant formatting notes (e.g., 'Header:', 'Footer:', 'Margin note:') where applicable.
-    If any text is unclear or partially visible, please indicate this with [unclear] or [partially visible].
-    """
+    prompt = """Extract and transcribe all visible text from this image maintaining the exact formatting and structure. Use labels like 'Header:', 'Footer:', etc. only when necessary for clarity. Mark unclear text with [unclear] and partially visible text with [partially visible]. Output the text directly without any introductory phrases or explanations."""
     
     try:
         response = client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=4096,
+            temperature=0,
             messages=[
                 {
                     "role": "user",
