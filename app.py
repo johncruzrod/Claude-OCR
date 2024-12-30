@@ -11,73 +11,37 @@ import numpy as np
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
-def compress_image(image_data, max_size_mb=4.8):
-   """Compress any image type while preserving quality"""
+def compress_image(file_obj):
+   """Compress image to under 5MB while maintaining readability"""
    try:
-       # Convert image data to bytes if it isn't already
-       if isinstance(image_data, Image.Image):
-           img = image_data
-       else:
-           # Reset file pointer if it's a file-like object
-           if hasattr(image_data, 'seek'):
-               image_data.seek(0)
-           img = Image.open(image_data)
-       
-       # Convert to RGB if necessary
-       if img.mode in ('RGBA', 'LA', 'P'):
-           bg = Image.new('RGB', img.size, (255, 255, 255))
-           if img.mode == 'RGBA':
-               bg.paste(img, mask=img.split()[-1])
-           else:
-               bg.paste(img)
-           img = bg
-
-       # Start compression
-       buffer = io.BytesIO()
-       img.save(buffer, format='JPEG', quality=95, optimize=True)
-       size = buffer.tell()
-       max_bytes = int(max_size_mb * 1024 * 1024)
-
-       # If size is already ok, return
-       if size <= max_bytes:
-           buffer.seek(0)
-           return buffer.getvalue()
-
-       # Gradually reduce quality and resize if needed
-       quality = 95
-       width, height = img.size
-       
-       while True:
-           buffer = io.BytesIO()
-           img.save(buffer, format='JPEG', quality=quality, optimize=True)
-           size = buffer.tell()
+       # Reset file pointer
+       if hasattr(file_obj, 'seek'):
+           file_obj.seek(0)
            
-           if size <= max_bytes:
-               buffer.seek(0)
-               return buffer.getvalue()
-           
-           if quality > 30:
-               quality -= 5
-           else:
-               # Scale down image
-               scale = (max_bytes / size) ** 0.5 * 0.9  # 0.9 for safety margin
-               width = int(width * scale)
-               height = int(height * scale)
-               img = img.resize((width, height), Image.Resampling.LANCZOS)
-               quality = 80  # Reset quality after resize
-
+       img = Image.open(file_obj)
+       img = img.convert('RGB')
+       
+       # Start with moderate compression
+       output = io.BytesIO()
+       img.save(output, format='JPEG', quality=50, optimize=True)
+       size = output.tell()
+       
+       # If still too big, resize the image
+       while size > 5 * 1024 * 1024:  # 5MB
+           width, height = img.size
+           img = img.resize((int(width*0.9), int(height*0.9)), Image.Resampling.LANCZOS)
+           output = io.BytesIO()
+           img.save(output, format='JPEG', quality=50, optimize=True)
+           size = output.tell()
+       
+       return output.getvalue()
    except Exception as e:
-       st.error(f"Error compressing image: {str(e)}")
-       raise
+       raise Exception(f"Compression failed: {str(e)}")
 
-def image_to_base64(image):
-   """Convert any image to base64 string."""
-   try:
-       compressed_data = compress_image(image)
-       return base64.b64encode(compressed_data).decode()
-   except Exception as e:
-       st.error(f"Error converting image to base64: {str(e)}")
-       raise
+def image_to_base64(file_obj):
+   """Convert image to base64 string, ensuring it's under 5MB"""
+   compressed = compress_image(file_obj)
+   return base64.b64encode(compressed).decode()
 
 def create_docx(texts):
    """Create a Word document from the extracted texts."""
@@ -164,9 +128,7 @@ def main():
            accept_multiple_files=True
        )
        if uploaded_files:
-           for file in uploaded_files:
-               image = Image.open(file)
-               images.append(image)
+           images = uploaded_files  # Store file objects directly
    else:
        # Initialize session state for captured images if it doesn't exist
        if 'captured_images' not in st.session_state:
@@ -176,9 +138,8 @@ def main():
        picture = st.camera_input("Take a picture")
        if picture is not None:
            try:
-               image = Image.open(picture)
                if 'last_photo' not in st.session_state or picture != st.session_state.last_photo:
-                   st.session_state.captured_images.append(image)
+                   st.session_state.captured_images.append(picture)  # Store file object directly
                    st.session_state.last_photo = picture
                    st.rerun()
            except Exception as e:
@@ -190,9 +151,11 @@ def main():
    if images:
        st.subheader("Preview")
        cols = st.columns(min(len(images), 3))
-       for idx, image in enumerate(images):
+       for idx, image_file in enumerate(images):
            with cols[idx % 3]:
-               st.image(image, caption=f"Image {idx + 1}", use_container_width=True)
+               image_file.seek(0)  # Reset file pointer
+               img = Image.open(image_file)
+               st.image(img, caption=f"Image {idx + 1}", use_container_width=True)
                if upload_option == "Take Photo(s)":
                    if st.button(f"❌ Remove", key=f"remove_{idx}"):
                        st.session_state.captured_images.pop(idx)
@@ -212,12 +175,12 @@ def main():
            # Process each image
            with st.spinner("Processing images..."):
                extracted_texts = []
-               for idx, image in enumerate(images, 1):
+               for idx, image_file in enumerate(images, 1):
                    st.write(f"Processing Image {idx}...")
                    progress_bar = st.progress(0)
                    
                    # Process image
-                   text = process_image(client, image)
+                   text = process_image(client, image_file)
                    extracted_texts.append(text)
                    
                    # Display extracted text
