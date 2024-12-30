@@ -59,7 +59,7 @@ Begin transcription directly:"""
         response = client.messages.create(
             model="claude-3-sonnet-20240229",
             max_tokens=4096,
-            temperature=0,
+            temperature=0.8,
             messages=[
                 {
                     "role": "user",
