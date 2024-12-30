@@ -6,22 +6,81 @@ import base64
 from docx import Document
 import tempfile
 import numpy as np
+import streamlit.components.v1 as components
+import json
 
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
-def optimize_image(file_obj):
-    """Optimize image for Claude Vision API while maintaining quality"""
+# Custom HTML/JS for high quality camera capture
+CAMERA_HTML = """
+<div>
+    <video id="video" style="width: 100%; max-width: 800px;" autoplay></video>
+    <button id="capture" style="margin: 10px 0;">Capture Photo</button>
+    <canvas id="canvas" style="display: none;"></canvas>
+</div>
+
+<script>
+let video = document.getElementById('video');
+let canvas = document.getElementById('canvas');
+let captureButton = document.getElementById('capture');
+let stream = null;
+
+// Request high-resolution camera access
+navigator.mediaDevices.getUserMedia({
+    video: {
+        width: { ideal: 4096 },
+        height: { ideal: 2160 },
+        facingMode: 'environment'
+    }
+}).then(function(s) {
+    stream = s;
+    video.srcObject = s;
+}).catch(function(err) {
+    console.error("Error accessing camera:", err);
+});
+
+captureButton.onclick = function() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    
+    // Convert to high-quality JPEG
+    const imageData = canvas.toDataURL('image/jpeg', 1.0);
+    
+    // Send to Streamlit
+    window.parent.postMessage({
+        type: 'camera_capture',
+        data: imageData
+    }, '*');
+};
+
+// Cleanup on unmount
+window.addEventListener('beforeunload', function() {
+    if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
+});
+</script>
+"""
+
+def optimize_image_from_base64(base64_string):
+    """Optimize image from base64 while maintaining maximum quality"""
     try:
-        # Reset file pointer and open image
-        if hasattr(file_obj, 'seek'):
-            file_obj.seek(0)
+        # Remove data URL prefix if present
+        if ',' in base64_string:
+            base64_string = base64_string.split(',')[1]
+            
+        # Decode base64 to bytes
+        image_data = base64.b64decode(base64_string)
+        img = Image.open(io.BytesIO(image_data))
         
-        img = Image.open(file_obj)
-        img = img.convert('RGB')
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
         
-        # Calculate target size while maintaining aspect ratio
-        max_dimension = 2048  # Max dimension for good quality
+        # Calculate target size maintaining aspect ratio
+        max_dimension = 4096  # Support up to 4K resolution
         width, height = img.size
         
         if width > max_dimension or height > max_dimension:
@@ -32,29 +91,63 @@ def optimize_image(file_obj):
                 new_height = max_dimension
                 new_width = int(width * (max_dimension / height))
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        # Save with optimal quality
+        
+        # Save with maximum quality first
         output = io.BytesIO()
         img.save(output, format='JPEG', quality=95, optimize=True)
         size = output.tell()
         
-        # If still over 5MB, gradually reduce quality while keeping size
-        if size > 5 * 1024 * 1024:
+        # Only reduce quality if absolutely necessary
+        if size > 5 * 1024 * 1024:  # 5MB limit
             quality = 90
-            while size > 5 * 1024 * 1024 and quality >= 60:
+            while size > 5 * 1024 * 1024 and quality >= 70:
                 output = io.BytesIO()
                 img.save(output, format='JPEG', quality=quality, optimize=True)
                 size = output.tell()
                 quality -= 5
         
-        return output.getvalue()
+        return base64.b64encode(output.getvalue()).decode()
     except Exception as e:
         raise Exception(f"Image optimization failed: {str(e)}")
 
-def image_to_base64(file_obj):
-    """Convert image to base64 string"""
-    optimized = optimize_image(file_obj)
-    return base64.b64encode(optimized).decode()
+def optimize_uploaded_image(file_obj):
+    """Optimize uploaded image file"""
+    try:
+        if hasattr(file_obj, 'seek'):
+            file_obj.seek(0)
+            
+        img = Image.open(file_obj)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+            
+        # Use same logic as base64 optimization
+        max_dimension = 4096
+        width, height = img.size
+        
+        if width > max_dimension or height > max_dimension:
+            if width > height:
+                new_width = max_dimension
+                new_height = int(height * (max_dimension / width))
+            else:
+                new_height = max_dimension
+                new_width = int(width * (max_dimension / height))
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=95, optimize=True)
+        size = output.tell()
+        
+        if size > 5 * 1024 * 1024:
+            quality = 90
+            while size > 5 * 1024 * 1024 and quality >= 70:
+                output = io.BytesIO()
+                img.save(output, format='JPEG', quality=quality, optimize=True)
+                size = output.tell()
+                quality -= 5
+                
+        return output.getvalue()
+    except Exception as e:
+        raise Exception(f"Image optimization failed: {str(e)}")
 
 def create_docx(texts):
     """Create a Word document from the extracted texts"""
@@ -71,20 +164,23 @@ def create_docx(texts):
         doc.save(tmp.name)
         return tmp.name
 
-def process_image(client, image):
-    """Process a single image with Claude Vision API"""
-    img_base64 = image_to_base64(image)
-    
-    prompt = """Please accurately transcribe all text from this image.
+def process_image_with_claude(client, image_data, is_base64=False):
+    """Process image with Claude Vision API"""
+    try:
+        if not is_base64:
+            image_base64 = base64.b64encode(image_data).decode()
+        else:
+            image_base64 = image_data
+            
+        prompt = """Please accurately transcribe all text from this image.
 Output only the transcribed text with no additional commentary.
 Preserve formatting and structure where possible.
 Pay special attention to handwriting and use context to ensure accuracy."""
-    
-    try:
+
         response = client.messages.create(
             model="claude-3-sonnet-20240229",
             max_tokens=4096,
-            temperature=0.0,  # Lower temperature for more accurate transcription
+            temperature=0.0,
             messages=[
                 {
                     "role": "user",
@@ -94,7 +190,7 @@ Pay special attention to handwriting and use context to ensure accuracy."""
                             "source": {
                                 "type": "base64",
                                 "media_type": "image/jpeg",
-                                "data": img_base64
+                                "data": image_base64
                             }
                         },
                         {
@@ -112,7 +208,7 @@ Pay special attention to handwriting and use context to ensure accuracy."""
 def main():
     st.title("📝 Image Text Extractor")
     st.write("""
-    Upload images or take photos to extract text using Claude Vision API.
+    Upload images or take high-quality photos to extract text using Claude Vision API.
     For best results:
     - Ensure good lighting and focus when taking photos
     - Hold the camera steady and frame the text clearly
@@ -123,7 +219,7 @@ def main():
     api_key = st.secrets["ANTHROPIC_API_KEY"]
     client = anthropic.Anthropic(api_key=api_key)
     
-    # Initialize session state for images
+    # Initialize session state
     if 'images' not in st.session_state:
         st.session_state.images = []
     
@@ -137,33 +233,57 @@ def main():
             accept_multiple_files=True
         )
         if uploaded_files:
-            st.session_state.images = uploaded_files
+            # Process and store uploaded images
+            for file in uploaded_files:
+                if file not in [img.get('file') for img in st.session_state.images]:
+                    optimized = optimize_uploaded_image(file)
+                    st.session_state.images.append({
+                        'file': file,
+                        'data': optimized,
+                        'type': 'uploaded'
+                    })
     else:
-        # Camera settings for better quality
         st.markdown("""
         ### Camera Tips
-        - Hold your device steady
-        - Ensure text is well-lit and in focus
+        - Use good lighting
+        - Hold phone steady
         - Position text parallel to camera
+        - Tap to focus on text
         """)
         
-        photo = st.camera_input(
-            "Take a photo",
-            help="Position the text clearly in frame and ensure good lighting"
-        )
+        # Custom high-quality camera component
+        components.html(CAMERA_HTML, height=600)
         
-        if photo and photo not in st.session_state.images:
-            st.session_state.images.append(photo)
+        # Handle captured photos via streamlit events
+        if st.session_state.get('camera_capture'):
+            captured_data = st.session_state.camera_capture
+            optimized_base64 = optimize_image_from_base64(captured_data)
+            
+            # Add to images if not already present
+            if optimized_base64 not in [img.get('data') for img in st.session_state.images]:
+                st.session_state.images.append({
+                    'data': optimized_base64,
+                    'type': 'captured'
+                })
+            
+            # Clear the capture state
+            del st.session_state.camera_capture
     
     # Display and manage images
     if st.session_state.images:
         st.subheader("Images to Process")
         
         cols = st.columns(3)
-        for idx, img in enumerate(st.session_state.images):
+        for idx, img_data in enumerate(st.session_state.images):
             with cols[idx % 3]:
-                img.seek(0)
-                st.image(img, caption=f"Image {idx + 1}", use_column_width=True)
+                if img_data['type'] == 'uploaded':
+                    img_data['file'].seek(0)
+                    st.image(img_data['file'], caption=f"Image {idx + 1}", use_column_width=True)
+                else:
+                    st.image(f"data:image/jpeg;base64,{img_data['data']}", 
+                            caption=f"Image {idx + 1}", 
+                            use_column_width=True)
+                    
                 if st.button(f"Remove Image {idx + 1}", key=f"remove_{idx}"):
                     st.session_state.images.pop(idx)
                     st.rerun()
@@ -181,10 +301,14 @@ def main():
             progress_text = st.empty()
             progress_bar = st.progress(0)
             
-            for idx, img in enumerate(st.session_state.images, 1):
+            for idx, img_data in enumerate(st.session_state.images, 1):
                 progress_text.write(f"Processing Image {idx}/{len(st.session_state.images)}...")
                 
-                text = process_image(client, img)
+                if img_data['type'] == 'uploaded':
+                    text = process_image_with_claude(client, img_data['data'])
+                else:
+                    text = process_image_with_claude(client, img_data['data'], is_base64=True)
+                    
                 extracted_texts.append(text)
                 
                 with st.expander(f"Text from Image {idx}", expanded=True):
@@ -205,5 +329,15 @@ def main():
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     )
 
+# Handle camera capture events
 if __name__ == "__main__":
+    # Initialize session state for camera captures
+    if 'camera_capture' not in st.session_state:
+        st.session_state.camera_capture = None
+        
+    # Create a new key in session state to track current camera capture
+    current_capture = st.query_params.get("camera_capture")
+    if current_capture:
+        st.session_state.camera_capture = current_capture
+        
     main()
