@@ -12,52 +12,91 @@ import numpy as np
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
 def compress_image(image, max_size_mb=4.8):
-    """Compress image while preserving text clarity"""
-    # Convert RGBA to RGB if necessary
-    if image.mode in ('RGBA', 'LA'):
-        background = Image.new('RGB', image.size, (255, 255, 255))
-        background.paste(image, mask=image.split()[-1])
-        image = background
+    """Compress any image type while preserving quality"""
+    # Ensure we have a copy to work with
+    image = image.copy()
+    
+    # Convert to RGB if necessary (handles PNG, RGBA, etc.)
+    if image.mode != 'RGB':
+        try:
+            # Handle transparency
+            if image.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'RGBA':
+                    background.paste(image, mask=image.split()[-1])
+                else:
+                    background.paste(image, mask=Image.new('L', image.size, 255))
+                image = background
+            else:
+                image = image.convert('RGB')
+        except Exception as e:
+            # Fallback conversion if sophisticated handling fails
+            image = image.convert('RGB')
 
-    # Initial quality for text-based images
-    quality = 90
+    # Target size in bytes (slightly under 5MB to be safe)
     max_bytes = int(max_size_mb * 1024 * 1024)
     
-    while True:
-        img_byte_arr = io.BytesIO()
-        
-        # Save with current quality
-        image.save(img_byte_arr, format='JPEG', quality=quality, optimize=True, subsampling=0)
-        size = len(img_byte_arr.getvalue())
-        
-        if size <= max_bytes:
-            break
-            
-        # If still too large, try reducing size while maintaining aspect ratio
-        if quality <= 65:  # Don't go below quality 65 for text
-            width, height = image.size
-            ratio = (max_bytes / size) ** 0.5  # Calculate new size ratio
-            new_width = int(width * ratio * 0.95)  # 0.95 factor for safety margin
-            new_height = int(height * ratio * 0.95)
-            
-            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            quality = 75  # Reset quality for resize
-        else:
-            quality -= 5
+    # Start with no resizing and high quality
+    quality = 95
+    scale = 1.0
     
-    img_byte_arr.seek(0)
-    return Image.open(img_byte_arr)
+    while True:
+        try:
+            # Create byte array
+            img_byte_arr = io.BytesIO()
+            
+            # If scale is not 1, resize the image
+            if scale != 1.0:
+                new_width = int(image.width * scale)
+                new_height = int(image.height * scale)
+                resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            else:
+                resized = image
+            
+            # Save with current settings
+            resized.save(img_byte_arr, format='JPEG', quality=quality, optimize=True)
+            size = len(img_byte_arr.getvalue())
+            
+            # If size is good, we're done
+            if size <= max_bytes:
+                img_byte_arr.seek(0)
+                return Image.open(img_byte_arr)
+            
+            # If we're here, image is too large - adjust parameters
+            if quality > 30:
+                # First try reducing quality
+                quality -= 5
+            else:
+                # If quality is already low, start scaling down
+                scale *= 0.9
+            
+            # Emergency break if image gets too small
+            if resized.width < 100 or resized.height < 100:
+                # Final attempt with minimum size
+                img_byte_arr = io.BytesIO()
+                resized.save(img_byte_arr, format='JPEG', quality=20, optimize=True)
+                img_byte_arr.seek(0)
+                return Image.open(img_byte_arr)
+                
+        except Exception as e:
+            # If any error occurs, return a heavily compressed version as last resort
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='JPEG', quality=20)
+            img_byte_arr.seek(0)
+            return Image.open(img_byte_arr)
 
 def image_to_base64(image):
-    """Convert PIL Image to base64 string."""
-    compressed_image = compress_image(image)
-    buffered = io.BytesIO()
-    
-    # For text/handwriting, always use high subsampling
-    compressed_image.save(buffered, format='JPEG', quality=75, subsampling=0)
-    
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return img_str
+    """Convert any image to base64 string."""
+    try:
+        compressed = compress_image(image)
+        buffered = io.BytesIO()
+        compressed.save(buffered, format='JPEG', optimize=True)
+        return base64.b64encode(buffered.getvalue()).decode()
+    except Exception as e:
+        # Last resort fallback
+        buffered = io.BytesIO()
+        image.convert('RGB').save(buffered, format='JPEG', quality=20)
+        return base64.b64encode(buffered.getvalue()).decode()
 
 def create_docx(texts):
    """Create a Word document from the extracted texts."""
