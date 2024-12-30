@@ -106,14 +106,19 @@ def main():
         # Initialize session state for captured images if it doesn't exist
         if 'captured_images' not in st.session_state:
             st.session_state.captured_images = []
-
+            
         # Camera input
         picture = st.camera_input("Take a picture")
-        if picture:
-            image = Image.open(picture)
-            st.session_state.captured_images.append(image)
-            st.rerun()
-            
+        if picture is not None:
+            try:
+                image = Image.open(picture)
+                if 'last_photo' not in st.session_state or picture != st.session_state.last_photo:
+                    st.session_state.captured_images.append(image)
+                    st.session_state.last_photo = picture
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error capturing image: {str(e)}")
+                
         images = st.session_state.captured_images.copy()
     
     # Display all images with remove buttons
@@ -132,6 +137,7 @@ def main():
         if upload_option == "Take Photo(s)" and len(images) > 1:
             if st.button("Clear All Photos", type="secondary"):
                 st.session_state.captured_images = []
+                st.session_state.last_photo = None
                 st.rerun()
         
         # Extract text button
