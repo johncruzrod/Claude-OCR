@@ -7,16 +7,16 @@ import tempfile
 from docx import Document
 from PIL import Image
 
-# Configure Streamlit
+# Configure the page
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
-# --------------------------------------------------------------------
-# 1. High-resolution camera HTML with no button inside
-#    We rely on a postMessage to trigger the capture
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# 1) HTML snippet for camera feed, NO internal capture button
+# -------------------------------------------------------------------
+# We rely on an external button that sends 'capturePhoto' to this iframe.
 CAMERA_HTML = """
 <style>
-  #camera-wrap {
+  #camera_wrap {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -32,7 +32,7 @@ CAMERA_HTML = """
     display: none;
   }
 </style>
-<div id="camera-wrap">
+<div id="camera_wrap">
   <video id="video" playsinline autoplay></video>
   <canvas id="canvas"></canvas>
 </div>
@@ -44,7 +44,7 @@ async function initCamera() {
     const canvas = document.getElementById('canvas');
 
     try {
-        // Attempt to get a high-resolution rear camera
+        // Attempt high-resolution rear camera
         stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: { ideal: 'environment' },
@@ -54,7 +54,7 @@ async function initCamera() {
             }
         });
     } catch (err) {
-        // Fallback to any camera if the above fails
+        // Fallback if 4K is blocked
         try {
             stream = await navigator.mediaDevices.getUserMedia({
                 video: {
@@ -71,20 +71,15 @@ async function initCamera() {
     video.srcObject = stream;
     video.setAttribute("playsinline", true);
 
-    // Listen for a message from the parent that says "capturePhoto"
+    // When the parent sends 'capturePhoto', capture current frame
     window.addEventListener('message', (event) => {
         if (event.data === 'capturePhoto') {
-            // Capture the current frame
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
-
             const ctx = canvas.getContext('2d');
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            // Convert canvas to a JPEG at 95% quality
             const imageData = canvas.toDataURL('image/jpeg', 0.95);
-
-            // Send it back to Streamlit
+            // Return it to parent
             window.parent.postMessage({
                 type: 'streamlit:setComponentValue',
                 value: imageData
@@ -92,7 +87,7 @@ async function initCamera() {
         }
     });
 
-    // Clean up on page unload
+    // Stop tracks on page unload
     window.addEventListener('beforeunload', () => {
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
@@ -100,33 +95,34 @@ async function initCamera() {
     });
 }
 
-// Start camera on load
 initCamera();
 </script>
 """
 
-# --------------------------------------------------------------------
-# 2. Optimise image to be under ~5 MB while preserving quality
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# 2) Functions for image optimisation and Claude Vision call
+# -------------------------------------------------------------------
 def optimise_image(image_data, is_base64=False):
+    """
+    Ensure the image is a JPEG under ~5 MB while preserving as much quality as possible.
+    """
     try:
         if is_base64:
-            # Strip data URL prefix if present
+            # Strip any data URL prefix
             if "," in image_data:
                 image_data = image_data.split(",")[1]
-            raw_bytes = base64.b64decode(image_data)
-            img = Image.open(io.BytesIO(raw_bytes))
+            raw = base64.b64decode(image_data)
+            img = Image.open(io.BytesIO(raw))
         else:
-            # It's a file-like
             if hasattr(image_data, "seek"):
                 image_data.seek(0)
             img = Image.open(image_data)
 
-        # Convert to RGB if not already
+        # Convert to RGB if necessary
         if img.mode != "RGB":
             img = img.convert("RGB")
 
-        # Scale down if bigger than 4096 in either dimension
+        # Resize if over 4096 in any dimension
         max_dim = 4096
         w, h = img.size
         if w > max_dim or h > max_dim:
@@ -138,12 +134,12 @@ def optimise_image(image_data, is_base64=False):
                 new_w = int(w * (max_dim / h))
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # Save at quality=95
+        # Save at quality=95, check size
         buf = io.BytesIO()
         img.save(buf, format="JPEG", optimize=True, quality=95)
         size_bytes = buf.tell()
 
-        # If still above 5 MB, lower quality in steps
+        # If still > 5MB, lower quality in steps
         if size_bytes > 5 * 1024 * 1024:
             quality = 90
             while size_bytes > 5 * 1024 * 1024 and quality >= 75:
@@ -154,13 +150,14 @@ def optimise_image(image_data, is_base64=False):
 
         buf.seek(0)
         return buf.getvalue()
+
     except Exception as e:
         raise Exception(f"Image optimization failed: {str(e)}")
 
-# --------------------------------------------------------------------
-# 3. Send image to Claude Vision for transcription
-# --------------------------------------------------------------------
 def process_image_with_claude(client, image_bytes):
+    """
+    Send the image to Claude Vision for text extraction.
+    """
     try:
         img_b64 = base64.b64encode(image_bytes).decode()
         prompt = """Please accurately transcribe all text from this image.
@@ -196,13 +193,12 @@ Pay special attention to handwriting and use context to ensure accuracy."""
     except Exception as e:
         return f"Error processing image: {str(e)}"
 
-# --------------------------------------------------------------------
-# 4. Create a Word doc containing transcriptions
-# --------------------------------------------------------------------
 def create_docx(text_list):
+    """
+    Create a docx containing all extracted texts.
+    """
     doc = Document()
     doc.add_heading("Extracted Text from Images", 0)
-
     for i, text in enumerate(text_list, start=1):
         doc.add_heading(f"Image {i}", level=1)
         doc.add_paragraph(text)
@@ -213,113 +209,159 @@ def create_docx(text_list):
         doc.save(tmp.name)
         return tmp.name
 
-# --------------------------------------------------------------------
-# 5. Main Streamlit app
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------
+# 3) Main App
+# -------------------------------------------------------------------
 def main():
     st.title("Image Text Extractor")
 
-    # Ensure we have the Anthropic API key
+    # Check we have the Anthropic key
     if "ANTHROPIC_API_KEY" not in st.secrets:
-        st.error("Please add your Anthropic API key in st.secrets['ANTHROPIC_API_KEY'].")
+        st.error("Please set st.secrets['ANTHROPIC_API_KEY'] to your Anthropic key.")
         return
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
-    # Prepare state for images
+    # This is where we store images (each item is dict with {"data": bytes, "method": ...})
     if "images" not in st.session_state:
-        st.session_state["images"] = []  # each is {"data": bytes, "method": "upload" or "camera"}
+        st.session_state["images"] = []
 
-    # Let user choose method
+    # Choose camera or upload
     method = st.radio("Choose input method:", ["Upload Image(s)", "Take Photo"])
 
-    # -------------------------
-    # 1) File uploader approach
-    # -------------------------
+    # --- (A) Upload multiple images ---
     if method == "Upload Image(s)":
         st.info("Upload one or more images for text extraction.")
-        uploaded = st.file_uploader(
-            "Select images",
-            accept_multiple_files=True,
-            type=["jpg", "jpeg", "png"]
-        )
-        if uploaded:
-            for f in uploaded:
+        files = st.file_uploader("Select images:", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+        if files:
+            for f in files:
                 # Avoid duplicates
                 if f not in [x.get("file") for x in st.session_state["images"] if x.get("file")]:
                     try:
-                        optimised_data = optimise_image(f, is_base64=False)
+                        optimised = optimise_image(f)
                         st.session_state["images"].append({
-                            "data": optimised_data,
+                            "data": optimised,
                             "file": f,
                             "method": "upload"
                         })
                     except Exception as e:
-                        st.error(f"Error processing file {f.name}: {str(e)}")
+                        st.error(f"Error with {f.name}: {str(e)}")
 
-    # -------------------------
-    # 2) Camera approach
-    # -------------------------
+    # --- (B) High-res camera feed with external capture button ---
     else:
-        st.info("Ensure good lighting and position the camera. Press 'Capture Photo' to take a snapshot.")
+        st.info("Ensure good lighting, position the camera, then click 'Capture Photo'.")
 
-        # Show the camera feed with no internal button
-        components.html(
-            CAMERA_HTML,
-            height=550,
-            scrolling=False,
-            key="my_camera"  # This is important so Streamlit can store the base64
+        # 1) Insert the camera HTML (no "key" passed)
+        camera_component = components.html(CAMERA_HTML, height=600, scrolling=False)
+
+        # 2) A hidden input that is purely for receiving the base64 from the iframe
+        st.markdown(
+            """
+            <input id="hidden_camera_data" type="hidden" />
+            <script>
+            //  Listen for the "streamlit:setComponentValue" event from the iframe
+            window.addEventListener("message", (event) => {
+                if(event.data && event.data.type === "streamlit:setComponentValue"){
+                    const base64Image = event.data.value;
+                    // Put it in our hidden input
+                    const hiddenInput = document.getElementById("hidden_camera_data");
+                    hiddenInput.value = base64Image;
+                    // Trigger a change event so Streamlit sees the updated value
+                    hiddenInput.dispatchEvent(new Event('change'));
+                }
+            });
+            </script>
+            """,
+            unsafe_allow_html=True
         )
 
-        # This is the external capture button
+        # 3) The external "Capture Photo" button in Streamlit
         if st.button("Capture Photo"):
-            # Send a message to the iframe to capture
-            # This runs in the parent's DOM context, which holds the iframe
-            # We search for the <iframe> whose key is "my_camera"
-            js = """
-            <script>
-            const frames = window.top.document.getElementsByTagName('iframe');
-            for (let f of frames) {
-                // Attempt to find the one matching the Streamlit key (my_camera).
-                // In practice, we check the srcdoc or name. 
-                // We'll assume the first one is correct if there's only one. 
-                // If multiple iframes exist, you'd need a more robust check.
-                if (f.srcdoc && f.srcdoc.indexOf('initCamera') !== -1) {
-                    f.contentWindow.postMessage('capturePhoto','*');
-                    break;
+            # Send a message to the iframe telling it to capture
+            st.markdown(
+                """
+                <script>
+                const frames = window.top.document.getElementsByTagName('iframe');
+                for(let f of frames){
+                    if(f.srcdoc && f.srcdoc.indexOf('initCamera') !== -1){
+                        f.contentWindow.postMessage('capturePhoto','*');
+                        break;
+                    }
                 }
-            }
+                </script>
+                """,
+                unsafe_allow_html=True
+            )
+
+        # 4) Watch for changes to #hidden_camera_data from the script. If changed, get it in Python.
+        #    We'll use st.experimental_get_query_params hack or a timer. Easiest is a small callback.
+        #    Since Streamlit cannot automatically pick up DOM changes, we do a minimal workaround:
+        captured_image_b64 = st.session_state.get("camera_base64", None)
+
+        # We'll poll the hidden input's value with a small "poll" button or an invisible form.
+        # Instead, let's do a tiny "Invisible Poll" by running some JavaScript that sets a query param
+        # or re-run. A simpler approach is an "on_change" text_input, but user said "No text boxes!"
+        # So we'll do a 1-second auto refresh and read the hidden input with `st.js_onclick`.
+        # 
+        # For reliability, let's just provide a small "Finalize Capture" button. 
+        # If you want it completely automatic, you'd do a custom component. 
+        if st.button("Finalize Capture"):
+            # This snippet reads the hidden input's value from the DOM
+            get_js = """
+            <script>
+            const hiddenValue = document.getElementById("hidden_camera_data").value;
+            window.parent.postMessage({
+                type: "setSessionStateCamera",
+                value: hiddenValue
+            }, "*");
             </script>
             """
-            st.markdown(js, unsafe_allow_html=True)
+            st.markdown(get_js, unsafe_allow_html=True)
 
-        # If the iframe returned new data, it will be in st.session_state["my_camera"]
-        # because we used key="my_camera"
-        captured_data = st.session_state.get("my_camera")
-        if captured_data and captured_data.startswith("data:image/jpeg;base64"):
-            # Optimise
-            try:
-                optimised_bytes = optimise_image(captured_data, is_base64=True)
-                # Avoid duplicates
-                if optimised_bytes not in [x["data"] for x in st.session_state["images"]]:
-                    st.session_state["images"].append({
-                        "data": optimised_bytes,
-                        "method": "camera"
-                    })
-                    # Clear out st.session_state["my_camera"] so we can capture again
-                    st.session_state["my_camera"] = ""
+        # Listen for messages from the parent if we do the above postMessage
+        # We'll store in st.session_state["camera_base64"] so we can do the next step
+        # We can’t do it purely in Python, so we do a small <script>:
+        st.markdown(
+            """
+            <script>
+            window.addEventListener("message", (event) => {
+                if(event.data && event.data.type==="setSessionStateCamera"){
+                    const base64Str = event.data.value;
+                    // Trigger a Streamlit state update via a custom hack:
+                    window.location.href = window.location.href.split("?")[0] + "?capturedb64=" + encodeURIComponent(base64Str);
+                }
+            });
+            </script>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Now we read ?capturedb64= from the URL
+        query_params = st.experimental_get_query_params()
+        if "capturedb64" in query_params:
+            new_b64 = query_params["capturedb64"][0]
+            if new_b64.startswith("data:image/jpeg;base64"):
+                try:
+                    optimised_bytes = optimise_image(new_b64, is_base64=True)
+                    # Check duplicates
+                    if optimised_bytes not in [x["data"] for x in st.session_state["images"]]:
+                        st.session_state["images"].append({"data": optimised_bytes, "method": "camera"})
+                    # Clear param from URL by reloading without it
+                    st.experimental_set_query_params()
                     st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Error processing captured photo: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error processing captured photo: {str(e)}")
+            else:
+                # Clear param if invalid
+                st.experimental_set_query_params()
 
-    # -----------------------------------------------
-    # Display images and let user remove or clear them
-    # -----------------------------------------------
+    # ----------------------------------------------------------------
+    # Show images grid
+    # ----------------------------------------------------------------
     if st.session_state["images"]:
         st.subheader("Images to Process")
-
-        columns = st.columns(3)
+        cols = st.columns(3)
         for i, img_info in enumerate(st.session_state["images"]):
-            with columns[i % 3]:
+            with cols[i % 3]:
                 try:
                     pil_img = Image.open(io.BytesIO(img_info["data"]))
                     st.image(pil_img, caption=f"Image {i + 1}", use_column_width=True)
@@ -329,39 +371,38 @@ def main():
                         st.experimental_rerun()
 
                 except Exception as e:
-                    st.error(f"Error displaying image {i + 1}: {str(e)}")
+                    st.error(f"Error displaying image {i+1}: {str(e)}")
 
         if len(st.session_state["images"]) > 1:
             if st.button("Clear All"):
                 st.session_state["images"] = []
                 st.experimental_rerun()
 
-        # -------------------------
-        # Extract text via Claude
-        # -------------------------
+        # ----------------------------------------------------------------
+        # Extract text with Claude Vision
+        # ----------------------------------------------------------------
         if st.button("Extract Text", type="primary"):
             st.subheader("Extracted Text")
+            texts = []
+            prog = st.progress(0)
+            status_area = st.empty()
 
-            results = []
-            progress_bar = st.progress(0)
-            status_box = st.empty()
-
-            for idx, img_dict in enumerate(st.session_state["images"]):
-                status_box.write(f"Processing image {idx + 1} of {len(st.session_state['images'])}...")
-                text_out = process_image_with_claude(client, img_dict["data"])
-                results.append(text_out)
+            for idx, info in enumerate(st.session_state["images"]):
+                status_area.write(f"Processing image {idx + 1} of {len(st.session_state['images'])}...")
+                result = process_image_with_claude(client, info["data"])
+                texts.append(result)
 
                 with st.expander(f"Text from Image {idx + 1}", expanded=True):
-                    st.write(text_out)
+                    st.write(result)
 
-                progress_bar.progress((idx + 1) / len(st.session_state["images"]))
+                prog.progress((idx + 1) / len(st.session_state["images"]))
 
-            status_box.write("Processing complete!")
+            status_area.write("Done!")
 
-            # Download all texts as docx
-            if results:
-                docx_file = create_docx(results)
-                with open(docx_file, "rb") as f:
+            # Download docx
+            if texts:
+                doc_path = create_docx(texts)
+                with open(doc_path, "rb") as f:
                     st.download_button(
                         label="Download as Word Document",
                         data=f,
