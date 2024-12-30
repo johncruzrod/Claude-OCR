@@ -112,33 +112,30 @@ def main():
         if picture:
             image = Image.open(picture)
             st.session_state.captured_images.append(image)
+            st.rerun()
             
-        # Display captured images with remove buttons
-        if st.session_state.captured_images:
-            st.write("Captured Images:")
-            cols = st.columns(3)
-            for idx, img in enumerate(st.session_state.captured_images):
-                with cols[idx % 3]:
-                    st.image(img, caption=f"Photo {idx + 1}", use_container_width=True)
-                    if st.button(f"Remove Photo {idx + 1}", key=f"remove_{idx}"):
-                        st.session_state.captured_images.pop(idx)
-                        st.rerun()
-            
-            # Clear all button
-            if st.button("Clear All Photos"):
-                st.session_state.captured_images = []
-                st.rerun()
-                
-        # Update images list with captured images
         images = st.session_state.captured_images.copy()
     
+    # Display all images with remove buttons
     if images:
-        st.subheader("Uploaded/Captured Images")
+        st.subheader("Preview")
         cols = st.columns(min(len(images), 3))
         for idx, image in enumerate(images):
-            cols[idx % 3].image(image, caption=f"Image {idx + 1}", use_container_width=True)
+            with cols[idx % 3]:
+                st.image(image, caption=f"Image {idx + 1}", use_container_width=True)
+                if upload_option == "Take Photo(s)":
+                    if st.button(f"❌ Remove", key=f"remove_{idx}"):
+                        st.session_state.captured_images.pop(idx)
+                        st.rerun()
         
-        if st.button("Extract Text", type="primary"):
+        # Show clear all button only for camera mode
+        if upload_option == "Take Photo(s)" and len(images) > 1:
+            if st.button("Clear All Photos", type="secondary"):
+                st.session_state.captured_images = []
+                st.rerun()
+        
+        # Extract text button
+        if st.button("Extract Text", type="primary", key="extract"):
             st.subheader("Extracted Text")
             
             # Process each image
