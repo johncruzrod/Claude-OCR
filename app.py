@@ -5,30 +5,23 @@ import io
 import base64
 from docx import Document
 import tempfile
+import cv2
+import numpy as np
 
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
 
 def compress_image(image_data, max_size_mb=4.8):
-   """Compress image bytes while preserving quality"""
+   """Compress any image type while preserving quality"""
    try:
        # Convert image data to bytes if it isn't already
        if isinstance(image_data, Image.Image):
-           img_byte_arr = io.BytesIO()
-           image_data.save(img_byte_arr, format='JPEG', quality=95)
-           image_data = img_byte_arr.getvalue()
-       elif hasattr(image_data, 'read'):
-           image_data = image_data.read()
-       
-       # Calculate target size
-       max_bytes = int(max_size_mb * 1024 * 1024)
-       
-       # If already small enough, just return it
-       if len(image_data) <= max_bytes:
-           return image_data
-       
-       # Open image with Pillow
-       img = Image.open(io.BytesIO(image_data))
+           img = image_data
+       else:
+           # Reset file pointer if it's a file-like object
+           if hasattr(image_data, 'seek'):
+               image_data.seek(0)
+           img = Image.open(image_data)
        
        # Convert to RGB if necessary
        if img.mode in ('RGBA', 'LA', 'P'):
@@ -38,45 +31,53 @@ def compress_image(image_data, max_size_mb=4.8):
            else:
                bg.paste(img)
            img = bg
-       
-       # Start with original size and high quality
+
+       # Start compression
+       buffer = io.BytesIO()
+       img.save(buffer, format='JPEG', quality=95, optimize=True)
+       size = buffer.tell()
+       max_bytes = int(max_size_mb * 1024 * 1024)
+
+       # If size is already ok, return
+       if size <= max_bytes:
+           buffer.seek(0)
+           return buffer.getvalue()
+
+       # Gradually reduce quality and resize if needed
        quality = 95
        width, height = img.size
        
        while True:
-           out = io.BytesIO()
-           img.save(out, format='JPEG', quality=quality, optimize=True)
-           out_size = out.tell()
+           buffer = io.BytesIO()
+           img.save(buffer, format='JPEG', quality=quality, optimize=True)
+           size = buffer.tell()
            
-           if out_size <= max_bytes:
-               return out.getvalue()
+           if size <= max_bytes:
+               buffer.seek(0)
+               return buffer.getvalue()
            
            if quality > 30:
                quality -= 5
            else:
-               # Scale down the image
-               ratio = (max_bytes / out_size) ** 0.5
-               width = int(width * ratio)
-               height = int(height * ratio)
+               # Scale down image
+               scale = (max_bytes / size) ** 0.5 * 0.9  # 0.9 for safety margin
+               width = int(width * scale)
+               height = int(height * scale)
                img = img.resize((width, height), Image.Resampling.LANCZOS)
                quality = 80  # Reset quality after resize
-           
-           if width < 800 and height < 800:
-               # Final compression attempt
-               out = io.BytesIO()
-               img.save(out, format='JPEG', quality=30, optimize=True)
-               return out.getvalue()
-               
+
    except Exception as e:
        st.error(f"Error compressing image: {str(e)}")
-       # Last resort: brutal compression
-       try:
-           img = Image.open(io.BytesIO(image_data))
-           out = io.BytesIO()
-           img.convert('RGB').save(out, format='JPEG', quality=20)
-           return out.getvalue()
-       except:
-           raise Exception("Failed to compress image")
+       raise
+
+def image_to_base64(image):
+   """Convert any image to base64 string."""
+   try:
+       compressed_data = compress_image(image)
+       return base64.b64encode(compressed_data).decode()
+   except Exception as e:
+       st.error(f"Error converting image to base64: {str(e)}")
+       raise
 
 def create_docx(texts):
    """Create a Word document from the extracted texts."""
@@ -94,47 +95,42 @@ def create_docx(texts):
        doc.save(tmp.name)
        return tmp.name
 
-def process_image(client, image_data):
-   """Process image data with Claude Vision API"""
+def process_image(client, image):
+   """Process a single image with Claude Vision API."""
+   # Convert to base64
+   img_base64 = image_to_base64(image)
+   
+   # Define the British English prompt for OCR
+   prompt = """You are an expert image-to-text AI assistant. Your task is to accurately transcribe text from images.
+
+Take the following image, and output all of the text contexts in plain text, without any additional output (introduction messages etc.)
+
+Aim for high accuracy, especially with things like handwriting, using contextual awareness from the entire image to transcribe word for word the contents."""
+   
    try:
-       # Compress the image
-       compressed_data = compress_image(image_data)
-       
-       # Convert to base64
-       img_base64 = base64.b64encode(compressed_data).decode()
-       
-       # Define the prompt for OCR
-       prompt = """You are an expert OCR system. Your task is to accurately transcribe text from this image:
-
-1. Output the exact text you see, preserving spelling and capitalization
-2. Preserve line breaks and spacing as they appear
-3. Ignore formatting descriptors - just give the raw text
-4. Use [unclear] only when text is truly unreadable
-5. Include any numbers or special characters exactly as shown
-6. Do not add descriptions, headers, or explanations
-7. Skip any image descriptions or visual elements
-8. Do not include any metadata or context notes
-
-Begin transcription:"""
-       
        response = client.messages.create(
            model="claude-3-sonnet-20240229",
            max_tokens=4096,
-           temperature=0,
-           messages=[{
-               "role": "user",
-               "content": [
-                   {
-                       "type": "image",
-                       "source": {
-                           "type": "base64",
-                           "media_type": "image/jpeg",
-                           "data": img_base64
+           temperature=0.8,
+           messages=[
+               {
+                   "role": "user",
+                   "content": [
+                       {
+                           "type": "image",
+                           "source": {
+                               "type": "base64",
+                               "media_type": "image/jpeg",
+                               "data": img_base64
+                           }
+                       },
+                       {
+                           "type": "text",
+                           "text": prompt
                        }
-                   },
-                   {"type": "text", "text": prompt}
-               ]
-           }]
+                   ]
+               }
+           ]
        )
        return response.content[0].text
    except Exception as e:
@@ -164,16 +160,13 @@ def main():
    if upload_option == "Upload Image(s)":
        uploaded_files = st.file_uploader(
            "Choose image file(s)", 
-           type=['png', 'jpg', 'jpeg', 'heic', 'heif', 'webp', 'bmp', 'tiff'],
+           type=['png', 'jpg', 'jpeg'], 
            accept_multiple_files=True
        )
        if uploaded_files:
            for file in uploaded_files:
-               try:
-                   # Store file directly
-                   images.append(file)
-               except Exception as e:
-                   st.error(f"Error loading image: {str(e)}")
+               image = Image.open(file)
+               images.append(image)
    else:
        # Initialize session state for captured images if it doesn't exist
        if 'captured_images' not in st.session_state:
@@ -183,8 +176,9 @@ def main():
        picture = st.camera_input("Take a picture")
        if picture is not None:
            try:
+               image = Image.open(picture)
                if 'last_photo' not in st.session_state or picture != st.session_state.last_photo:
-                   st.session_state.captured_images.append(picture)
+                   st.session_state.captured_images.append(image)
                    st.session_state.last_photo = picture
                    st.rerun()
            except Exception as e:
@@ -196,11 +190,9 @@ def main():
    if images:
        st.subheader("Preview")
        cols = st.columns(min(len(images), 3))
-       for idx, image_data in enumerate(images):
+       for idx, image in enumerate(images):
            with cols[idx % 3]:
-               # Display image using PIL
-               img = Image.open(image_data)
-               st.image(img, caption=f"Image {idx + 1}", use_container_width=True)
+               st.image(image, caption=f"Image {idx + 1}", use_container_width=True)
                if upload_option == "Take Photo(s)":
                    if st.button(f"❌ Remove", key=f"remove_{idx}"):
                        st.session_state.captured_images.pop(idx)
@@ -220,12 +212,12 @@ def main():
            # Process each image
            with st.spinner("Processing images..."):
                extracted_texts = []
-               for idx, image_data in enumerate(images, 1):
+               for idx, image in enumerate(images, 1):
                    st.write(f"Processing Image {idx}...")
                    progress_bar = st.progress(0)
                    
                    # Process image
-                   text = process_image(client, image_data)
+                   text = process_image(client, image)
                    extracted_texts.append(text)
                    
                    # Display extracted text
