@@ -40,20 +40,24 @@ def process_image(client, image):
     img_base64 = image_to_base64(image)
     
     # Define the British English prompt for OCR
-    prompt = """Examine the entire image carefully, paying special attention to handwritten content. Consider the full context of the image to help interpret any unclear handwriting. When transcribing:
+    prompt = """You are an expert OCR system. Your task is to accurately transcribe text from this image:
 
-- Maintain the original layout and structure of the text
-- Use context clues from the entire document to help interpret ambiguous handwriting
-- If characters or words are unclear even with context, mark them as [unclear]
-- For partially visible or cut-off text, indicate with [partial]
-- If numbers are present, verify them carefully against any surrounding context
-- Preserve any formatting or structure that adds meaning to the text
+1. Output the exact text you see, preserving spelling and capitalization
+2. Preserve line breaks and spacing as they appear
+3. Ignore formatting descriptors - just give the raw text
+4. Use [unclear] only when text is truly unreadable
+5. Include any numbers or special characters exactly as shown
+6. Do not add descriptions, headers, or explanations
+7. Skip any image descriptions or visual elements
+8. Do not include any metadata or context notes
 
-Provide only the transcribed text without any explanatory notes."""
+**IMPORTANT:** Use the entire image as context when transcribing the text, making sure to be word for word accurate in your extraction. Accuracy is of upmost importance, transcribe the handwriting exactly as you see it, even if some words are "wrong" in a sentence. Do not try to modify the output based on what you think may be correct, just output the exact transcribed text.
+
+Begin transcription directly:"""
     
     try:
         response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-sonnet-20240229",
             max_tokens=4096,
             temperature=0,
             messages=[
