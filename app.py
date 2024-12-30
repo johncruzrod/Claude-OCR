@@ -5,8 +5,6 @@ import io
 import base64
 from docx import Document
 import tempfile
-import cv2
-import numpy as np
 
 # Set page config
 st.set_page_config(page_title="Image Text Extractor", page_icon="📝", layout="wide")
@@ -116,7 +114,7 @@ def main():
         st.subheader("Uploaded/Captured Images")
         cols = st.columns(min(len(images), 3))
         for idx, image in enumerate(images):
-            cols[idx % 3].image(image, caption=f"Image {idx + 1}", use_column_width=True)
+            cols[idx % 3].image(image, caption=f"Image {idx + 1}", use_container_width=True)
         
         if st.button("Extract Text", type="primary"):
             st.subheader("Extracted Text")
